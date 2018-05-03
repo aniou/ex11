@@ -1,4 +1,7 @@
--module(ex11_lib_driver).
+%%%----------------------------------------------------------------------------
+%%% @doc An OTP gen_server example
+%%% @author Hans Christian v. Stockhausen 
+%%% @end
 
 %% Copyright (C) 2004 by Joe Armstrong (joe@sics.se)
 %% All rights reserved.
@@ -8,7 +11,6 @@
 %% not modified. There is no warranty for this software.
 
 %% 2004-01-01 Origional version by by joe@sics.se
-
 %% 2004-01-17 Improved handling of code to resolve display addresses by
 %%            Shawn Pearce <spearce@spearce.org>
 %% 2004-01-28 Fixed get_connect_reply which only worked if the
@@ -16,51 +18,66 @@
 %%            Frej Drejhammar <frej@stacken.kth.se>
 %% 2004-01-31 Added code from Luke Gorrie for handling of unix domain
 %%            sockets
-%% ex11_connect only handles the connection
-%%   connection is complex - mainly because some large data structures need
-%%   parsing.
 
-%% ex11_driver:start(Host) -> 
-%%    {ok, {Pid,Display, Screen}}  if the connection works
-%%                                 screen is the screen that was requested at
-%%                                 start
-%%                                 Pid = is the Pid of the driver process
-%%    {error, Why} otherwise
 
--export([start/1, send_cmd/2, new_id/1, get_display/2]).
+%%%----------------------------------------------------------------------------
 
+-module(ex11_lib_driver).
+-behaviour(gen_server).
+
+-define(SERVER, ?MODULE).
+-include("ex11_lib.hrl").
 
 -import(ex11_lib, [pError/1, pEvent/1]).
 -import(lists, [map/2,reverse/1]).
 
--include("ex11_lib.hrl").
+%%-----------------------------------------------------------------------------
+%% API Function Exports
+%%-----------------------------------------------------------------------------
 
-new_id(Pid) -> rpc(Pid, create_id).
-    
-get_display(Pid, Key) -> rpc(Pid, {get_display, Key}).
+-export([
+  start_link/2,
+  send_cmd/2,
+  get_display/1 
+]).
 
-send_cmd(Pid, C) -> Pid ! {cmd, C}.
+%% ---------------------------------------------------------------------------
+%% gen_server Function Exports
+%% ---------------------------------------------------------------------------
 
-rpc(Pid, Q) ->
-    Pid ! {self(), Q},
-    receive
-	{Pid, Reply} ->
-	    Reply
-    end.
+-export([
+  init/1,                      % - initializes our process
+  handle_call/3,               % - handles synchronous calls (with response)
+  handle_cast/2,               % - handles asynchronous calls  (no response)
+  handle_info/2,               % - handles out of band messages (sent with !)
+  terminate/2,                 % - is called on shut-down
+  code_change/3                % - called to handle code changes
+]).
 
-start(Display) ->
-  process_flag(trap_exit,true),
-  S = self(),
-  Pid = spawn_link(fun() -> init(S, Display) end),
-  %% io:format("ex11_lib_driver start/1 Pid=~p~n",[Pid]),
-  receive 
-    {Pid,Ack} -> Ack 
-  end.
+%% ---------------------------------------------------------------------------
+%% API Function Definitions
+%% ---------------------------------------------------------------------------
 
-return(Pid, Val) ->
-    Pid ! {self(), Val}.
+start_link(From, Display) ->
+	gen_server:start_link(?MODULE, [From, Display], []).
 
-init(From, Target) ->
+send_cmd(DriverPid, C) -> 
+	gen_server:cast(DriverPid, {cmd, C}).
+
+get_display(DriverPid) ->
+	gen_server:call(DriverPid, get_display).
+
+
+%% ---------------------------------------------------------------------------
+%% gen_server Function Definitions
+%% ---------------------------------------------------------------------------
+
+%% ex11_connect only handles the connection
+%%   connection is complex - mainly because some large data structures need
+%%   parsing.
+
+init([From, Target]) ->
+  io:format("child pid ~p~n", [self()]),
   io:format("init driver Display=~p~n",[Target]),
   case ex11_lib_connect:start(Target) of
     {ok, {Display, Screen, Fd}} ->
@@ -69,58 +86,89 @@ init(From, Target) ->
       %% Max command length 
       Max = Display#display.max_request_size,
       %% io:format("Max RequestSize=~p~n",[Max]),
-      return(From, {ok, {self(), Display, Screen}}),
-      driver_loop(From, Fd, Max);
+	  {ok, {From, Fd, <<>>, Max, [], 0, Display, Screen}, 2000};
     Error -> 
-      return(From, {error, connect})
+		{stop, {error, connect}}
   end.
 
-driver_loop(Client, Fd, Max) ->
-    loop(Client, Fd, <<>>, Max, [], 0).
 
-loop(Client, Fd, Bin, Max, OB, LO) ->
-    receive
-	{cmd, C} ->
+
+handle_call(get_display, _From,  {From, Fd, <<>>, Max, [], 0, Display, Screen}) ->
+	{reply,  {ok, {self(), Display, Screen}},  {From, Fd, <<>>, Max, [], 0, Display, Screen}, 2000};
+
+handle_call(_Request, _From, State) ->
+	{reply,  ok, State, 2000}.
+
+
+
+handle_cast({cmd, C}, {Client, Fd, Bin, Max, OB, LO, Display, Screen}) ->
 	    if
 		size(C) + LO < Max ->
 		    %% io:format("storing~p bytes~n",[size(C)]),
-		    loop(Client, Fd, Bin, Max, [C|OB], LO + size(C));
+			{noreply, {Client, Fd, Bin, Max, [C|OB], LO + size(C), Display, Screen}, 2000};
 		true ->
 		    send(Fd, reverse(OB)),
-		    loop(Client, Fd, Bin, Max, [C], size(C))
+			{noreply, {Client, Fd, Bin, Max, [C], size(C), Display, Screen}, 2000}
 	    end;
-	flush ->
-	    %% io:format("Driver got flush~n"),
-	    send(Fd, reverse(OB)),
-	    loop(Client, Fd, Bin, Max, [], 0);
-	{tcp, Port, BinX} ->
-	    %% io:format("received:~p bytes~n",[size(BinX)]),
-	    Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
-	    loop(Client, Fd, Bin1, Max, OB, LO);
-	{unixdom, Socket, BinX} ->
-	    Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
-	    loop(Client, Fd, Bin1, Max, OB, LO);
-	{'EXIT', _, die} ->
-	    gen_tcp:close(Fd),
-	    exit(killed);
-  {tcp_closed,_Port} -> init:stop();
-	Any ->
-	    io:format("top_loop (driver) got:~p~n",[Any]),
-	    loop(Client, Fd, Bin, Max, OB, LO)
-	after 2000 ->
+
+handle_cast(_Msg, State) ->
+	    {noreply, State}.  
+
+
+handle_info(timeout, {Client, Fd, Bin, Max, OB, LO, Display, Screen}) ->
+		%io:format("ex11_lib_driver timeout~n"),
 		if
 		    LO > 0 ->
 			io:format("Flushing (forgotten xFlush() ???)~n"),
 			send(Fd, reverse(OB));
 		    true ->
-			void
+		      {noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000}
 		end,
-		loop(Client, Fd, Bin, Max, [], 0)
-	end.
+		{noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000};
+
+
+% XXX: crude workaround - conversion in progress
+%
+handle_info(Info, {Client, Fd, Bin, Max, OB, LO, Display, Screen}) ->
+    case Info of
+	flush ->
+	    %% io:format("Driver got flush~n"),
+	    send(Fd, reverse(OB)),
+		{noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000};
+	{tcp, Port, BinX} ->
+	    %% io:format("received:~p bytes~n",[size(BinX)]),
+	    Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
+		{noreply, {Client, Fd, Bin1, Max, OB, LO, Display, Screen}, 2000};
+	{unixdom, Socket, BinX} ->
+	    Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
+		{noreply, {Client, Fd, Bin1, Max, OB, LO, Display, Screen}, 2000};
+	{'EXIT', _, die} ->
+	    gen_tcp:close(Fd),
+	    exit(killed); %% XXX - change it!
+  % XXX - change it!
+  {tcp_closed,_Port} -> init:stop();
+	Any ->
+	    io:format("top_loop (driver) got:~p~n",[Any]),
+		{noreply, {Client, Fd, Bin, Max, OB, LO, Display, Screen}, 2000}
+  end.
+
+
+terminate(_Reason, _State) ->
+  ok.
+
+
+code_change(_OldVsn, State, _Extra) ->
+  {ok, State}.
+
+
+%% ------------------------------------------------------------------
+%% Internal Function Definitions
+%% ------------------------------------------------------------------
 
 handle(Client, <<0:8,_/binary>>= B1) when size(B1) >= 31 ->
     %% error
     {E, Bin1} = split_binary(B1, 32),
+	%% TODO 'using a matched out sub binary will prevent delayed sub binary optimization'
     <<0:8,Error:8,_/binary>> = E,
     io:format("Xerr:~p~n",[error_to_string(Error)]),
     Client ! pError(E),
@@ -186,6 +234,4 @@ error_to_string(16) -> length;
 error_to_string(17) -> implementation;
 error_to_string(X) -> X.
 
-
-
-
+% eof
