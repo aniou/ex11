@@ -41,14 +41,22 @@ start() ->
     spawn_link(fun() -> init() end).
 
 init() ->
+    ex11_lib_driver_sup:start_link(),
     {ok,Pid}   = xStart(),
     spawn(fun()  -> win1(Pid) end),
     spawn(fun()  -> win2(Pid) end),
     spawn(fun()  -> win3(Pid) end),
     spawn(fun()  -> win4(Pid) end),
     spawn(fun()  -> win5(Pid) end),
-    true.
+    % temporary workaround for linked supervisor
+    empty_loop().
     
+empty_loop() ->
+    receive
+        _ -> 
+            empty_loop()
+    end.
+
 win1(Pid) ->
     Win  = xCreateSimpleWindow(Pid, 10, 10, 300, 100, ?XC_arrow, 
 			       xColor(Pid, ?wheat2)),

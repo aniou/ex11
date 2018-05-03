@@ -27,6 +27,7 @@ start() ->
     spawn_link(fun() -> init() end).
 
 init() ->
+    ex11_lib_driver_sup:start_link(),
     {ok, Pid} = ex11_lib:xStart(os:getenv("DISPLAY", ":1.0")),
     Win  = xCreateSimpleWindow(Pid, 10, 10, 300, 100, ?XC_arrow, 
 			       xColor(Pid, ?wheat2)),
