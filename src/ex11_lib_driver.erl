@@ -31,6 +31,16 @@
 -import(ex11_lib, [pError/1, pEvent/1]).
 -import(lists, [map/2,reverse/1]).
 
+-record(driver, {client_pid,       % Pid of client, ex11_lib_control usually
+                 fd,               % file descriptor of connection to X serv
+                 in_buffer,        % incoming buffer <<binary>>
+                 max_request_size, % max req. len of Xserv see out_queue_len
+                 out_queue,        % out queue [<<bin>>, ...]
+                 out_queue_size,   % out queue size len(<<bin>>) + len(<<bin
+                 display,          % display structure, redundant!
+                 screen            % screen id - X11
+                }).
+
 %%-----------------------------------------------------------------------------
 %% API Function Exports
 %%-----------------------------------------------------------------------------
@@ -84,80 +94,104 @@ init([From, Target]) ->
             %% io:format("Display=~p~n",[Display]),
             %% ?PRINT_DISPLAY(Display),
             %% Max command length 
-            Max = Display#display.max_request_size,
+            Max = Display#display.max_request_size,  % XXX redundant
             %% io:format("Max RequestSize=~p~n",[Max]),
-            {ok, {From, Fd, <<>>, Max, [], 0, Display, Screen}, 2000};
+            State = #driver{client_pid       = From,
+                            fd               = Fd,
+                            in_buffer        = <<>>,
+                            max_request_size = Max,  % XXX redundant
+                            out_queue        = [],
+                            out_queue_size   = 0,
+                            display          = Display, 
+                            screen           = Screen},
+            {ok, State, 2000};
         Error -> 
             {stop, {error, connect}}
   end.
 
-
-
-handle_call(get_display, _From,  {From, Fd, <<>>, Max, [], 0, Display, Screen}) ->
-    {reply,  {ok, {self(), Display, Screen}},  {From, Fd, <<>>, Max, [], 0, Display, Screen}, 2000};
+%% ---------------------------------------------------------------------------
+% XXX - check redundancy between max_request_size and whole display rec,
+% XXX - check, why Display was returned to ex11_lib_control in first 
+%       place
+handle_call(get_display, _From, State) ->
+    Display = State#driver.display,
+    Screen  = State#driver.screen,
+    {reply,  {ok, {self(), Display, Screen}}, State, 2000};
 
 handle_call(_Request, _From, State) ->
     {reply,  ok, State, 2000}.
 
-
-   
-handle_cast({cmd, C}, {Client, Fd, Bin, Max, OB, LO, Display, Screen}) ->
+%% ---------------------------------------------------------------------------
+handle_cast({cmd, C}, State) ->
+    LO  = State#driver.out_queue_size,
+    Max = State#driver.max_request_size,
+    OB  = State#driver.out_queue,
     if
     size(C) + LO < Max ->
         %% io:format("storing~p bytes~n",[size(C)]),
-        {noreply, {Client, Fd, Bin, Max, [C|OB], LO + size(C), Display, Screen}, 2000};
+        {noreply, State#driver{out_queue=[C|OB],
+                               out_queue_size=LO+size(C)}, 2000};
     true ->
-        send(Fd, reverse(OB)),
-        {noreply, {Client, Fd, Bin, Max, [C], size(C), Display, Screen}, 2000}
+        send(State#driver.fd, reverse(OB)),
+        {noreply, State#driver{out_queue=[C],
+                               out_queue_size=size(C)}, 2000}
     end;
 
 handle_cast(_Msg, State) ->
     {noreply, State}.  
 
-
-handle_info(timeout, {Client, Fd, Bin, Max, OB, LO, Display, Screen}) ->
-    %io:format("ex11_lib_driver timeout~n"),
+%% ---------------------------------------------------------------------------
+handle_info(timeout, State) ->
+    io:format("ex11_lib_driver timeout~n"),
+    LO  = State#driver.out_queue_size,
     if
         LO > 0 ->
         io:format("Flushing (forgotten xFlush() ???)~n"),
-        send(Fd, reverse(OB));
+        send(State#driver.fd, reverse(State#driver.out_queue));
     true ->
-        {noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000}
+        {noreply, State#driver{out_queue=[],
+                               out_queue_size=0}, 2000}
     end,
-    {noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000};
+    {noreply, State#driver{out_queue=[],
+                           out_queue_size=0}, 2000};
+
+handle_info(flush, State) ->
+    %% io:format("Driver got flush~n"),
+    send(State#driver.fd, reverse(State#driver.out_queue)),
+    {noreply, State#driver{out_queue=[],
+                           out_queue_size=0}, 2000};
+
+handle_info({tcp, Port, BinX}, State) ->
+    %% io:format("received:~p bytes~n",[size(BinX)]),
+    Bin  = State#driver.in_buffer,
+    Bin1 = handle(State#driver.client_pid, <<Bin/binary, BinX/binary>>),
+    {noreply, State#driver{in_buffer=Bin1}, 2000};
+
+handle_info({unixdom, Socket, BinX}, State) ->
+    Bin  = State#driver.in_buffer,
+    Bin1 = handle(State#driver.client_pid, <<Bin/binary, BinX/binary>>),
+    {noreply, State#driver{in_buffer=Bin1}, 2000};
+
+% XXX - change it!
+handle_info({'EXIT', _, die}, State) ->
+    gen_tcp:close(State#driver.fd),
+    {stop, killed, State};
+
+% XXX - change it!
+handle_info({tcp_closed,_Port}, State) ->
+    init:stop();
+    %{stop, tcp_closed, State};
+
+handle_info(Info, State) ->
+    io:format("top_loop (driver) got:~p~n",[Info]),
+    {noreply, State, 2000}.
 
 
-% XXX: crude workaround - conversion in progress
-%
-handle_info(Info, {Client, Fd, Bin, Max, OB, LO, Display, Screen}) ->
-    case Info of
-        flush ->
-            %% io:format("Driver got flush~n"),
-            send(Fd, reverse(OB)),
-            {noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000};
-        {tcp, Port, BinX} ->
-            %% io:format("received:~p bytes~n",[size(BinX)]),
-            Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
-            {noreply, {Client, Fd, Bin1, Max, OB, LO, Display, Screen}, 2000};
-        {unixdom, Socket, BinX} ->
-            Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
-            {noreply, {Client, Fd, Bin1, Max, OB, LO, Display, Screen}, 2000};
-        {'EXIT', _, die} ->
-            gen_tcp:close(Fd),
-            exit(killed); %% XXX - change it!
-        % XXX - change it!
-        {tcp_closed,_Port} -> 
-            init:stop();
-        Any ->
-            io:format("top_loop (driver) got:~p~n",[Any]),
-            {noreply, {Client, Fd, Bin, Max, OB, LO, Display, Screen}, 2000}
-    end.
-
-
+%% ---------------------------------------------------------------------------
 terminate(_Reason, _State) ->
     ok.
 
-
+%% ---------------------------------------------------------------------------
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
