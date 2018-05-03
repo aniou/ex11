@@ -36,9 +36,7 @@
                  in_buffer,        % incoming buffer <<binary>>
                  max_request_size, % max req. len of Xserv see out_queue_len
                  out_queue,        % out queue [<<bin>>, ...]
-                 out_queue_size,   % out queue size len(<<bin>>) + len(<<bin
-                 display,          % display structure, redundant!
-                 screen            % screen id - X11
+                 out_queue_size    % out queue size len(<<bin>>) + len(<<bin
                 }).
 
 %%-----------------------------------------------------------------------------
@@ -46,9 +44,9 @@
 %%-----------------------------------------------------------------------------
 
 -export([
-    start_link/2,
-    send_cmd/2,
-    get_display/1 
+    start/1,
+    start_link/0,
+    send_cmd/2
 ]).
 
 %% ---------------------------------------------------------------------------
@@ -68,55 +66,67 @@
 %% API Function Definitions
 %% ---------------------------------------------------------------------------
 
-start_link(From, Display) ->
-    gen_server:start_link(?MODULE, [From, Display], []).
+%% it should be called from ex11_lib_control
+
+% there is a room for multiple drivers supervised by ex11_lib_driver_sup
+% in future (maybe multiple drivers for single ex11_lib_control?)
+start(Target) ->
+    {ok, DriverPid} = supervisor:start_child(ex11_lib_driver_sup, []),
+    case gen_server:call(DriverPid, {start_driver, Target}) of
+        {ok, {Display, Screen}} ->
+            {ok, {DriverPid, Display, Screen}};
+        Other ->
+            Other
+    end.
 
 send_cmd(DriverPid, C) -> 
     gen_server:cast(DriverPid, {cmd, C}).
 
-get_display(DriverPid) ->
-    gen_server:call(DriverPid, get_display).
 
+% that one is called from supervisor
+start_link() ->
+    io:format("start link called~n",[]),
+    gen_server:start_link(?MODULE, [], []).
 
 %% ---------------------------------------------------------------------------
 %% gen_server Function Definitions
 %% ---------------------------------------------------------------------------
 
+init([]) ->
+    State = #driver{client_pid       = false,
+                    fd               = false,
+                    in_buffer        = <<>>,
+                    max_request_size = 0, 
+                    out_queue        = [],
+                    out_queue_size   = 0},
+
+    {ok, State}.
+
+%% ---------------------------------------------------------------------------
 %% ex11_connect only handles the connection
 %%   connection is complex - mainly because some large data structures need
 %%   parsing.
 
-init([From, Target]) ->
-    io:format("child pid ~p~n", [self()]),
+%%
+%%
+
+handle_call({start_driver, Target}, {From, _Tag}, State) ->
     io:format("init driver Display=~p~n",[Target]),
     case ex11_lib_connect:start(Target) of
         {ok, {Display, Screen, Fd}} ->
             %% io:format("Display=~p~n",[Display]),
             %% ?PRINT_DISPLAY(Display),
             %% Max command length 
-            Max = Display#display.max_request_size,  % XXX redundant
+            Max = Display#display.max_request_size,  
             %% io:format("Max RequestSize=~p~n",[Max]),
-            State = #driver{client_pid       = From,
-                            fd               = Fd,
-                            in_buffer        = <<>>,
-                            max_request_size = Max,  % XXX redundant
-                            out_queue        = [],
-                            out_queue_size   = 0,
-                            display          = Display, 
-                            screen           = Screen},
-            {ok, State, 2000};
+            {reply, {ok, {Display, Screen}},
+                    State#driver{fd=Fd, 
+                                 client_pid=From,
+                                 max_request_size=Max}, 2000};
         Error -> 
-            {stop, {error, connect}}
-  end.
+            {reply, {error, Error}, State}
+    end;
 
-%% ---------------------------------------------------------------------------
-% XXX - check redundancy between max_request_size and whole display rec,
-% XXX - check, why Display was returned to ex11_lib_control in first 
-%       place
-handle_call(get_display, _From, State) ->
-    Display = State#driver.display,
-    Screen  = State#driver.screen,
-    {reply,  {ok, {self(), Display, Screen}}, State, 2000};
 
 handle_call(_Request, _From, State) ->
     {reply,  ok, State, 2000}.

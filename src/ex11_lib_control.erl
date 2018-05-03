@@ -35,10 +35,7 @@ start(Display) ->
 
 init(From, Target) ->
   process_flag(trap_exit, true),
-  {ok, DriverPid} = supervisor:start_child(ex11_lib_driver_sup, [self(), Target]),
-  io:format("Supervisor return: ~p ~n", [DriverPid]),
-  case ex11_lib_driver:get_display(DriverPid) of
-  %case ex11_lib_driver:start(Target) of
+  case ex11_lib_driver:start(Target) of
     {ok, {Driver, Display, Screen}} ->
       %% Screen is the screen we were started with
       %% ie the screen in the DISPLAY variable
