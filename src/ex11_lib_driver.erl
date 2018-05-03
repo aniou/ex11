@@ -36,9 +36,9 @@
 %%-----------------------------------------------------------------------------
 
 -export([
-  start_link/2,
-  send_cmd/2,
-  get_display/1 
+    start_link/2,
+    send_cmd/2,
+    get_display/1 
 ]).
 
 %% ---------------------------------------------------------------------------
@@ -46,12 +46,12 @@
 %% ---------------------------------------------------------------------------
 
 -export([
-  init/1,                      % - initializes our process
-  handle_call/3,               % - handles synchronous calls (with response)
-  handle_cast/2,               % - handles asynchronous calls  (no response)
-  handle_info/2,               % - handles out of band messages (sent with !)
-  terminate/2,                 % - is called on shut-down
-  code_change/3                % - called to handle code changes
+    init/1,                      % - initializes our process
+    handle_call/3,               % - handles synchronous calls (with response)
+    handle_cast/2,               % - handles asynchronous calls  (no response)
+    handle_info/2,               % - handles out of band messages (sent with !)
+    terminate/2,                 % - is called on shut-down
+    code_change/3                % - called to handle code changes
 ]).
 
 %% ---------------------------------------------------------------------------
@@ -59,13 +59,13 @@
 %% ---------------------------------------------------------------------------
 
 start_link(From, Display) ->
-	gen_server:start_link(?MODULE, [From, Display], []).
+    gen_server:start_link(?MODULE, [From, Display], []).
 
 send_cmd(DriverPid, C) -> 
-	gen_server:cast(DriverPid, {cmd, C}).
+    gen_server:cast(DriverPid, {cmd, C}).
 
 get_display(DriverPid) ->
-	gen_server:call(DriverPid, get_display).
+    gen_server:call(DriverPid, get_display).
 
 
 %% ---------------------------------------------------------------------------
@@ -77,88 +77,89 @@ get_display(DriverPid) ->
 %%   parsing.
 
 init([From, Target]) ->
-  io:format("child pid ~p~n", [self()]),
-  io:format("init driver Display=~p~n",[Target]),
-  case ex11_lib_connect:start(Target) of
-    {ok, {Display, Screen, Fd}} ->
-      %% io:format("Display=~p~n",[Display]),
-      %% ?PRINT_DISPLAY(Display),
-      %% Max command length 
-      Max = Display#display.max_request_size,
-      %% io:format("Max RequestSize=~p~n",[Max]),
-	  {ok, {From, Fd, <<>>, Max, [], 0, Display, Screen}, 2000};
-    Error -> 
-		{stop, {error, connect}}
+    io:format("child pid ~p~n", [self()]),
+    io:format("init driver Display=~p~n",[Target]),
+    case ex11_lib_connect:start(Target) of
+        {ok, {Display, Screen, Fd}} ->
+            %% io:format("Display=~p~n",[Display]),
+            %% ?PRINT_DISPLAY(Display),
+            %% Max command length 
+            Max = Display#display.max_request_size,
+            %% io:format("Max RequestSize=~p~n",[Max]),
+            {ok, {From, Fd, <<>>, Max, [], 0, Display, Screen}, 2000};
+        Error -> 
+            {stop, {error, connect}}
   end.
 
 
 
 handle_call(get_display, _From,  {From, Fd, <<>>, Max, [], 0, Display, Screen}) ->
-	{reply,  {ok, {self(), Display, Screen}},  {From, Fd, <<>>, Max, [], 0, Display, Screen}, 2000};
+    {reply,  {ok, {self(), Display, Screen}},  {From, Fd, <<>>, Max, [], 0, Display, Screen}, 2000};
 
 handle_call(_Request, _From, State) ->
-	{reply,  ok, State, 2000}.
+    {reply,  ok, State, 2000}.
 
 
-
+   
 handle_cast({cmd, C}, {Client, Fd, Bin, Max, OB, LO, Display, Screen}) ->
-	    if
-		size(C) + LO < Max ->
-		    %% io:format("storing~p bytes~n",[size(C)]),
-			{noreply, {Client, Fd, Bin, Max, [C|OB], LO + size(C), Display, Screen}, 2000};
-		true ->
-		    send(Fd, reverse(OB)),
-			{noreply, {Client, Fd, Bin, Max, [C], size(C), Display, Screen}, 2000}
-	    end;
+    if
+    size(C) + LO < Max ->
+        %% io:format("storing~p bytes~n",[size(C)]),
+        {noreply, {Client, Fd, Bin, Max, [C|OB], LO + size(C), Display, Screen}, 2000};
+    true ->
+        send(Fd, reverse(OB)),
+        {noreply, {Client, Fd, Bin, Max, [C], size(C), Display, Screen}, 2000}
+    end;
 
 handle_cast(_Msg, State) ->
-	    {noreply, State}.  
+    {noreply, State}.  
 
 
 handle_info(timeout, {Client, Fd, Bin, Max, OB, LO, Display, Screen}) ->
-		%io:format("ex11_lib_driver timeout~n"),
-		if
-		    LO > 0 ->
-			io:format("Flushing (forgotten xFlush() ???)~n"),
-			send(Fd, reverse(OB));
-		    true ->
-		      {noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000}
-		end,
-		{noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000};
+    %io:format("ex11_lib_driver timeout~n"),
+    if
+        LO > 0 ->
+        io:format("Flushing (forgotten xFlush() ???)~n"),
+        send(Fd, reverse(OB));
+    true ->
+        {noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000}
+    end,
+    {noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000};
 
 
 % XXX: crude workaround - conversion in progress
 %
 handle_info(Info, {Client, Fd, Bin, Max, OB, LO, Display, Screen}) ->
     case Info of
-	flush ->
-	    %% io:format("Driver got flush~n"),
-	    send(Fd, reverse(OB)),
-		{noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000};
-	{tcp, Port, BinX} ->
-	    %% io:format("received:~p bytes~n",[size(BinX)]),
-	    Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
-		{noreply, {Client, Fd, Bin1, Max, OB, LO, Display, Screen}, 2000};
-	{unixdom, Socket, BinX} ->
-	    Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
-		{noreply, {Client, Fd, Bin1, Max, OB, LO, Display, Screen}, 2000};
-	{'EXIT', _, die} ->
-	    gen_tcp:close(Fd),
-	    exit(killed); %% XXX - change it!
-  % XXX - change it!
-  {tcp_closed,_Port} -> init:stop();
-	Any ->
-	    io:format("top_loop (driver) got:~p~n",[Any]),
-		{noreply, {Client, Fd, Bin, Max, OB, LO, Display, Screen}, 2000}
-  end.
+        flush ->
+            %% io:format("Driver got flush~n"),
+            send(Fd, reverse(OB)),
+            {noreply, {Client, Fd, Bin, Max, [], 0, Display, Screen}, 2000};
+        {tcp, Port, BinX} ->
+            %% io:format("received:~p bytes~n",[size(BinX)]),
+            Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
+            {noreply, {Client, Fd, Bin1, Max, OB, LO, Display, Screen}, 2000};
+        {unixdom, Socket, BinX} ->
+            Bin1 = handle(Client, <<Bin/binary, BinX/binary>>),
+            {noreply, {Client, Fd, Bin1, Max, OB, LO, Display, Screen}, 2000};
+        {'EXIT', _, die} ->
+            gen_tcp:close(Fd),
+            exit(killed); %% XXX - change it!
+        % XXX - change it!
+        {tcp_closed,_Port} -> 
+            init:stop();
+        Any ->
+            io:format("top_loop (driver) got:~p~n",[Any]),
+            {noreply, {Client, Fd, Bin, Max, OB, LO, Display, Screen}, 2000}
+    end.
 
 
 terminate(_Reason, _State) ->
-  ok.
+    ok.
 
 
 code_change(_OldVsn, State, _Extra) ->
-  {ok, State}.
+    {ok, State}.
 
 
 %% ------------------------------------------------------------------
@@ -168,7 +169,7 @@ code_change(_OldVsn, State, _Extra) ->
 handle(Client, <<0:8,_/binary>>= B1) when size(B1) >= 31 ->
     %% error
     {E, Bin1} = split_binary(B1, 32),
-	%% TODO 'using a matched out sub binary will prevent delayed sub binary optimization'
+    %% TODO 'using a matched out sub binary will prevent delayed sub binary optimization'
     <<0:8,Error:8,_/binary>> = E,
     io:format("Xerr:~p~n",[error_to_string(Error)]),
     Client ! pError(E),
@@ -188,12 +189,12 @@ decode_reply(Client, <<_:32,Len:32,_/binary>> = Bin) ->
     Size = size(Bin),
     %% io:format("Need=~p Size=~p~n",[Need,Size]),
     if
-	Need =< Size ->
-	    {Bin0, Bin1} = split_binary(Bin, Need),
-	    dispatch(Client, Bin0),
-	    handle(Client, Bin1);
-	Need > Size ->
-	    Bin
+    Need =< Size ->
+        {Bin0, Bin1} = split_binary(Bin, Need),
+        dispatch(Client, Bin0),
+        handle(Client, Bin1);
+    Need > Size ->
+        Bin
     end.
 
 dispatch(Client, <<1:8,_:8,Seq:16,_/binary>> = B) ->
@@ -212,7 +213,7 @@ send({tcp, Fd}, Bin) ->
 % sleep(T) ->
 %   receive
 %     after T ->
-%	    true
+%        true
 %    end.
 
 error_to_string(1) -> request;
